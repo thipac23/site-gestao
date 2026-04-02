@@ -155,21 +155,31 @@ const LoginPage = ({ onLogin }) => {
   const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
-  const [mode, setMode] = useState('login') // login | request
+  const [mode, setMode] = useState('login') // login | request | forgot
+  const [forgotEmail, setForgotEmail] = useState('')
+  const [forgotSent, setForgotSent] = useState(false)
 
   const handleLogin = async (e) => {
     e.preventDefault()
     setLoading(true); setError('')
     const { data, error: err } = await supabase.auth.signInWithPassword({ email, password })
     if (err) {
-      // Try users table fallback for demo
-      const { data: users } = await supabase.from('users').select('*').eq('email', email).single()
-      if (users) { onLogin(users); setLoading(false); return }
       setError('E-mail ou senha inválidos')
     } else {
       const { data: user } = await supabase.from('users').select('*').eq('email', email).maybeSingle()
       onLogin(user || { email, role: 'supervisor', name: data.user?.email?.split('@')[0] || 'Usuário' })
     }
+    setLoading(false)
+  }
+
+  const handleForgot = async (e) => {
+    e.preventDefault()
+    setLoading(true); setError('')
+    const { error: err } = await supabase.auth.resetPasswordForEmail(forgotEmail, {
+      redirectTo: `${window.location.origin}/#reset-password`
+    })
+    if (err) setError('Erro ao enviar email. Tente novamente.')
+    else setForgotSent(true)
     setLoading(false)
   }
 
@@ -211,7 +221,10 @@ const LoginPage = ({ onLogin }) => {
                   {loading ? <Spinner /> : null} Entrar
                 </button>
               </form>
-              <div className="mt-5 pt-4 border-t border-gray-100 dark:border-gray-700 text-center">
+              <div className="mt-5 pt-4 border-t border-gray-100 dark:border-gray-700 flex items-center justify-between">
+                <button onClick={() => { setMode('forgot'); setError('') }} className="text-sm text-gray-500 dark:text-gray-400 hover:text-sky-600 dark:hover:text-sky-400 transition-colors">
+                  Esqueci minha senha
+                </button>
                 <button onClick={() => setMode('request')} className="text-sm text-sky-600 dark:text-sky-400 hover:underline">
                   Solicitar acesso
                 </button>
@@ -249,6 +262,41 @@ const LoginPage = ({ onLogin }) => {
             </>
           )}
         </div>
+
+        {/* Forgot Password Modal */}
+        {mode === 'forgot' && (
+          <div className="fixed inset-0 bg-black/40 flex items-center justify-center p-4 z-50">
+            <div className="card p-7 w-full max-w-sm shadow-xl animate-fadeIn">
+              {forgotSent ? (
+                <div className="text-center py-4">
+                  <CheckCircle size={40} className="text-emerald-500 mx-auto mb-3" />
+                  <h3 className="font-semibold text-gray-900 dark:text-white mb-1">Email enviado!</h3>
+                  <p className="text-sm text-gray-500 dark:text-gray-400 mb-4">Verifique sua caixa de entrada para redefinir a senha.</p>
+                  <button onClick={() => { setMode('login'); setForgotSent(false); setForgotEmail('') }} className="btn-primary w-full">Voltar ao login</button>
+                </div>
+              ) : (
+                <>
+                  <div className="flex items-center gap-2 mb-5">
+                    <button onClick={() => { setMode('login'); setError('') }} className="p-1 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"><ChevronRight size={16} className="rotate-180 text-gray-400" /></button>
+                    <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Recuperar senha</h2>
+                  </div>
+                  <p className="text-sm text-gray-500 dark:text-gray-400 mb-4">Informe seu e-mail e enviaremos um link para redefinir a senha.</p>
+                  {error && <div className="mb-4 p-3 rounded-xl bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 text-sm">{error}</div>}
+                  <form onSubmit={handleForgot} className="space-y-4">
+                    <div>
+                      <label className="label">E-mail corporativo</label>
+                      <input className="input" type="email" placeholder="seu@email.com" value={forgotEmail} onChange={e => setForgotEmail(e.target.value)} required />
+                    </div>
+                    <button className="btn-primary w-full flex items-center justify-center gap-2" disabled={loading}>
+                      {loading ? <Spinner /> : null} Enviar link de recuperação
+                    </button>
+                  </form>
+                </>
+              )}
+            </div>
+          </div>
+        )}
+
         <p className="text-center text-xs text-gray-400 mt-6">© 2026 Reframax · Acesso restrito e monitorado</p>
       </div>
     </div>
