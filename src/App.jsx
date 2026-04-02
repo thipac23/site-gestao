@@ -204,7 +204,7 @@ const LoginPage = ({ onLogin }) => {
         </div>
 
         <div className="card p-7 shadow-xl shadow-gray-200/50 dark:shadow-black/30">
-          {mode === 'login' ? (
+          {(mode === 'login' || mode === 'forgot') ? (
             <>
               <h2 className="text-lg font-semibold text-gray-900 dark:text-white mb-5">Entrar na plataforma</h2>
               {error && <div className="mb-4 p-3 rounded-xl bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 text-sm">{error}</div>}
