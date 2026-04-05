@@ -2,6 +2,8 @@
 import { useEffect, useState } from 'react'
 import { AppShell } from '@/components/layout/AppShell'
 import { createClient } from '@/lib/supabase/client'
+import { useUserPermissions } from '@/lib/hooks/useUserPermissions'
+import { Plus, Loader2, AlertCircle, Lock } from 'lucide-react'
 
 type FinanceiroRow = {
   id: number
@@ -11,14 +13,35 @@ type FinanceiroRow = {
   registros_atividade?: { data?: string; descricao?: string } | null
 }
 
+// ──── Tipos do formulário ────────────────────────────────────
+type FormFinanceiro = {
+  registros_atividade_id: string
+  quantidade_apurada: string
+  status_financeiro: string
+}
+
 export default function FinanceiroPage() {
+  const { perfil, permissoes } = useUserPermissions()
   const [registros, setRegistros] = useState<FinanceiroRow[]>([])
   const [loading, setLoading] = useState(true)
   const [filtroStatus, setFiltroStatus] = useState('todos')
+  const [showForm, setShowForm] = useState(false)
+  const canCreate = permissoes?.create_financeiro ?? false
+  const [formData, setFormData] = useState<FormFinanceiro>({
+    registros_atividade_id: '',
+    quantidade_apurada: '',
+    status_financeiro: 'pendente',
+  })
+  const [submitting, setSubmitting] = useState(false)
+  const [erro, setErro] = useState('')
 
   useEffect(() => {
-    async function load() {
-      setLoading(true)
+    carregar()
+  }, [filtroStatus])
+
+  async function carregar() {
+    setLoading(true)
+    try {
       const supabase = createClient()
       let query = supabase
         .from('financeiro_registros')
@@ -30,12 +53,60 @@ export default function FinanceiroPage() {
         query = query.eq('status_financeiro', filtroStatus)
       }
 
-      const { data } = await query
+      const { data, error } = await query
+      if (error) throw error
       setRegistros(data || [])
+    } catch (err) {
+      console.error('Erro ao carregar:', err)
+      setRegistros([])
+    } finally {
       setLoading(false)
     }
-    load()
-  }, [filtroStatus])
+  }
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    setErro('')
+
+    // 🔒 Verificar permissão
+    if (!canCreate) {
+      setErro('Você não tem permissão para registrar apurações financeiras.')
+      return
+    }
+
+    // Validação rigorosa
+    if (!formData.registros_atividade_id) { setErro('Atividade é obrigatória'); return }
+    if (!formData.quantidade_apurada || parseInt(formData.quantidade_apurada) <= 0) { setErro('Quantidade deve ser maior que 0'); return }
+    if (!formData.status_financeiro) { setErro('Status é obrigatório'); return }
+
+    setSubmitting(true)
+
+    try {
+      const supabase = createClient()
+      const { error } = await supabase.from('financeiro_registros').insert({
+        registros_atividade_id: parseInt(formData.registros_atividade_id),
+        quantidade_apurada: parseInt(formData.quantidade_apurada),
+        status_financeiro: formData.status_financeiro,
+        // NOTA: valor_apurado é CALCULADO pelo banco, nunca inserido manualmente
+      })
+
+      if (error) throw error
+
+      // Sucesso: limpa e recarrega
+      setFormData({
+        registros_atividade_id: '',
+        quantidade_apurada: '',
+        status_financeiro: 'pendente',
+      })
+      setShowForm(false)
+      carregar()
+    } catch (err: any) {
+      console.error('Erro ao salvar:', err)
+      setErro(err.message || 'Erro ao salvar. Tente novamente.')
+    } finally {
+      setSubmitting(false)
+    }
+  }
 
   const totalApurado = registros.reduce((sum, r) => sum + Number(r.valor_apurado || 0), 0)
 
@@ -48,18 +119,98 @@ export default function FinanceiroPage() {
   return (
     <AppShell>
       <div className="space-y-6">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div>
             <h1 className="text-2xl font-bold text-foreground">Financeiro</h1>
             <p className="text-sm text-muted-foreground mt-1">Apuração de valores por atividade</p>
           </div>
-          <select value={filtroStatus} onChange={e => setFiltroStatus(e.target.value)} className="input w-44">
-            <option value="todos">Todos os status</option>
-            <option value="pendente">Pendente</option>
-            <option value="aprovado">Aprovado</option>
-            <option value="rejeitado">Rejeitado</option>
-          </select>
+          <div className="flex items-center gap-2">
+            <select value={filtroStatus} onChange={e => setFiltroStatus(e.target.value)} className="input text-sm">
+              <option value="todos">Todos os status</option>
+              <option value="pendente">Pendente</option>
+              <option value="aprovado">Aprovado</option>
+              <option value="rejeitado">Rejeitado</option>
+            </select>
+            <button
+              onClick={() => setShowForm(!showForm)}
+              disabled={!canCreate}
+              title={canCreate ? '' : `Acesso restrito. Seu perfil (${perfil}) não pode registrar apurações financeiras.`}
+              className={`flex items-center gap-2 text-sm py-2 whitespace-nowrap ${
+                canCreate
+                  ? 'btn-primary'
+                  : 'px-3 py-2 rounded-lg bg-slate-200 dark:bg-slate-700 text-slate-500 dark:text-slate-400 cursor-not-allowed opacity-50'
+              }`}
+            >
+              {canCreate ? <Plus size={15} /> : <Lock size={15} />}
+              {showForm ? 'Cancelar' : 'Novo Registro'}
+            </button>
+          </div>
         </div>
+
+        {/* Formulário de criação */}
+        {showForm && (
+          <form onSubmit={handleSubmit} className="card space-y-4 bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700">
+            {erro && (
+              <div className="flex items-start gap-2 p-3 bg-red-500/10 border border-red-500/30 rounded-lg">
+                <AlertCircle size={18} className="text-red-600 dark:text-red-400 mt-0.5 flex-shrink-0" />
+                <p className="text-sm text-red-600 dark:text-red-400">{erro}</p>
+              </div>
+            )}
+
+            <p className="text-xs text-slate-600 dark:text-slate-400 italic">
+              ℹ️ O valor apurado é calculado automaticamente pela matriz de preços
+            </p>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="label text-xs font-medium">Registro de Atividade (ID)*</label>
+                <input
+                  type="number"
+                  placeholder="ID do registro de atividade"
+                  value={formData.registros_atividade_id}
+                  onChange={e => setFormData({ ...formData, registros_atividade_id: e.target.value })}
+                  className="input text-sm"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="label text-xs font-medium">Quantidade Apurada*</label>
+                <input
+                  type="number"
+                  placeholder="Quantidade"
+                  min="1"
+                  value={formData.quantidade_apurada}
+                  onChange={e => setFormData({ ...formData, quantidade_apurada: e.target.value })}
+                  className="input text-sm"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="label text-xs font-medium">Status*</label>
+                <select
+                  value={formData.status_financeiro}
+                  onChange={e => setFormData({ ...formData, status_financeiro: e.target.value })}
+                  className="input text-sm"
+                  required
+                >
+                  <option value="pendente">Pendente</option>
+                  <option value="aprovado">Aprovado</option>
+                  <option value="rejeitado">Rejeitado</option>
+                </select>
+              </div>
+            </div>
+
+            <button
+              type="submit"
+              disabled={submitting}
+              className="btn-primary w-full"
+            >
+              {submitting ? '⏳ Salvando...' : '✓ Registrar Apuração'}
+            </button>
+          </form>
+        )}
 
         {/* Cards resumo */}
         <div className="grid grid-cols-2 md:grid-cols-3 gap-4">

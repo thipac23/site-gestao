@@ -5,9 +5,10 @@
 import { useEffect, useState } from 'react'
 import { AppShell } from '@/components/layout/AppShell'
 import { useT } from '@/lib/hooks/useAppStore'
+import { useUserPermissions } from '@/lib/hooks/useUserPermissions'
 import { createClient } from '@/lib/supabase/client'
 import type { Programacao } from '@/lib/types/database'
-import { CalendarDays, Plus, Loader2, AlertCircle } from 'lucide-react'
+import { CalendarDays, Plus, Loader2, AlertCircle, Lock, X } from 'lucide-react'
 import { format } from 'date-fns'
 
 const COR_STATUS: Record<string, string> = {
@@ -18,12 +19,41 @@ const COR_STATUS: Record<string, string> = {
   'Não Realizado': 'badge-gray',
 }
 
+// ──── Tipos do formulário ────────────────────────────────────
+type FormProgramacao = {
+  data: string
+  os_numero: string
+  bateria: string
+  bloco: string
+  forno: string
+  lado: string
+  atividade_escopo_id: string  // ID do relacionamento
+  equipe_id: string             // ID do relacionamento
+  status_programacao: string
+}
+
 export default function ProgramacaoPage() {
   const t = useT()
   const supabase = createClient()
+  const { perfil, permissoes, loading: permLoading } = useUserPermissions()
   const [programacoes, setProgramacoes] = useState<Programacao[]>([])
   const [loading, setLoading] = useState(true)
   const [dataFiltro, setDataFiltro] = useState(format(new Date(), 'yyyy-MM-dd'))
+  const [showForm, setShowForm] = useState(false)
+  const canCreate = permissoes?.create_programacao ?? false
+  const [formData, setFormData] = useState<FormProgramacao>({
+    data: dataFiltro,
+    os_numero: '',
+    bateria: '',
+    bloco: '',
+    forno: '',
+    lado: '',
+    atividade_escopo_id: '',
+    equipe_id: '',
+    status_programacao: 'Programado',
+  })
+  const [submitting, setSubmitting] = useState(false)
+  const [erro, setErro] = useState('')
 
   useEffect(() => {
     carregar()
@@ -31,13 +61,77 @@ export default function ProgramacaoPage() {
 
   async function carregar() {
     setLoading(true)
-    const { data } = await supabase
-      .from('programacao')
-      .select('*, atividades_escopo(*), equipes(*), usuarios(nome)')
-      .eq('data', dataFiltro)
-      .order('id', { ascending: false })
-    setProgramacoes(data ?? [])
-    setLoading(false)
+    try {
+      const { data, error } = await supabase
+        .from('programacao')
+        .select('*, atividades_escopo(*), equipes(*), usuarios(nome)')
+        .eq('data', dataFiltro)
+        .order('id', { ascending: false })
+
+      if (error) throw error
+      setProgramacoes(data ?? [])
+    } catch (err) {
+      console.error('Erro ao carregar:', err)
+      setProgramacoes([])
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    setErro('')
+
+    // 🔒 Verificar permissão
+    if (!canCreate) {
+      setErro('Você não tem permissão para registrar programações.')
+      return
+    }
+
+    // Validação rigorosa
+    if (!formData.data) { setErro('Data é obrigatória'); return }
+    if (!formData.os_numero.trim()) { setErro('OS é obrigatória'); return }
+    if (!formData.bateria.trim()) { setErro('Bateria é obrigatória'); return }
+    if (!formData.atividade_escopo_id) { setErro('Atividade é obrigatória'); return }
+    if (!formData.equipe_id) { setErro('Equipe é obrigatória'); return }
+
+    setSubmitting(true)
+
+    try {
+      const { error } = await supabase.from('programacao').insert({
+        data: formData.data,
+        os_numero: formData.os_numero.trim(),
+        bateria: formData.bateria.trim(),
+        bloco: formData.bloco?.trim() || null,
+        forno: formData.forno?.trim() || null,
+        lado: formData.lado?.trim() || null,
+        atividade_id: parseInt(formData.atividade_escopo_id),
+        equipe_id: parseInt(formData.equipe_id),
+        status_programacao: formData.status_programacao,
+      })
+
+      if (error) throw error
+
+      // Sucesso: limpa e recarrega
+      setFormData({
+        data: dataFiltro,
+        os_numero: '',
+        bloco: '',
+        forno: '',
+        lado: '',
+        bateria: '',
+        atividade_escopo_id: '',
+        equipe_id: '',
+        status_programacao: 'Programado',
+      })
+      setShowForm(false)
+      carregar()
+    } catch (err: any) {
+      console.error('Erro ao salvar:', err)
+      setErro(err.message || 'Erro ao salvar. Tente novamente.')
+    } finally {
+      setSubmitting(false)
+    }
   }
 
   return (
@@ -62,12 +156,139 @@ export default function ProgramacaoPage() {
               onChange={e => setDataFiltro(e.target.value)}
               className="input text-sm w-auto"
             />
-            <button className="btn-primary flex items-center gap-2 text-sm py-2">
-              <Plus size={15} />
-              Nova OS
+            <button
+              onClick={() => setShowForm(!showForm)}
+              disabled={!canCreate}
+              title={canCreate ? '' : `Acesso restrito. Seu perfil (${perfil}) não pode registrar programações.`}
+              className={`flex items-center gap-2 text-sm py-2 ${
+                canCreate
+                  ? 'btn-primary'
+                  : 'px-3 py-2 rounded-lg bg-slate-200 dark:bg-slate-700 text-slate-500 dark:text-slate-400 cursor-not-allowed opacity-50'
+              }`}
+            >
+              {canCreate ? <Plus size={15} /> : <Lock size={15} />}
+              {showForm ? 'Cancelar' : 'Nova OS'}
             </button>
           </div>
         </div>
+
+        {/* Formulário de criação */}
+        {showForm && (
+          <form onSubmit={handleSubmit} className="card space-y-4 bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700">
+            {erro && (
+              <div className="flex items-start gap-2 p-3 bg-red-500/10 border border-red-500/30 rounded-lg">
+                <AlertCircle size={18} className="text-red-600 dark:text-red-400 mt-0.5 flex-shrink-0" />
+                <p className="text-sm text-red-600 dark:text-red-400">{erro}</p>
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="label text-xs font-medium">OS / Número*</label>
+                <input
+                  type="text"
+                  placeholder="Ex: OS-001"
+                  value={formData.os_numero}
+                  onChange={e => setFormData({ ...formData, os_numero: e.target.value })}
+                  className="input text-sm"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="label text-xs font-medium">Bateria*</label>
+                <input
+                  type="text"
+                  placeholder="Ex: Bateria A"
+                  value={formData.bateria}
+                  onChange={e => setFormData({ ...formData, bateria: e.target.value })}
+                  className="input text-sm"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="label text-xs font-medium">Bloco</label>
+                <input
+                  type="text"
+                  placeholder="Opcional"
+                  value={formData.bloco}
+                  onChange={e => setFormData({ ...formData, bloco: e.target.value })}
+                  className="input text-sm"
+                />
+              </div>
+
+              <div>
+                <label className="label text-xs font-medium">Forno</label>
+                <input
+                  type="text"
+                  placeholder="Opcional"
+                  value={formData.forno}
+                  onChange={e => setFormData({ ...formData, forno: e.target.value })}
+                  className="input text-sm"
+                />
+              </div>
+
+              <div>
+                <label className="label text-xs font-medium">Lado</label>
+                <input
+                  type="text"
+                  placeholder="Opcional"
+                  value={formData.lado}
+                  onChange={e => setFormData({ ...formData, lado: e.target.value })}
+                  className="input text-sm"
+                />
+              </div>
+
+              <div>
+                <label className="label text-xs font-medium">Atividade (ID)*</label>
+                <input
+                  type="number"
+                  placeholder="ID da atividade"
+                  value={formData.atividade_escopo_id}
+                  onChange={e => setFormData({ ...formData, atividade_escopo_id: e.target.value })}
+                  className="input text-sm"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="label text-xs font-medium">Equipe (ID)*</label>
+                <input
+                  type="number"
+                  placeholder="ID da equipe"
+                  value={formData.equipe_id}
+                  onChange={e => setFormData({ ...formData, equipe_id: e.target.value })}
+                  className="input text-sm"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="label text-xs font-medium">Status</label>
+                <select
+                  value={formData.status_programacao}
+                  onChange={e => setFormData({ ...formData, status_programacao: e.target.value })}
+                  className="input text-sm"
+                >
+                  <option>Programado</option>
+                  <option>Em Execução</option>
+                  <option>Concluído</option>
+                  <option>Cancelado</option>
+                  <option>Não Realizado</option>
+                </select>
+              </div>
+            </div>
+
+            <button
+              type="submit"
+              disabled={submitting}
+              className="btn-primary w-full"
+            >
+              {submitting ? '⏳ Salvando...' : '✓ Salvar Programação'}
+            </button>
+          </form>
+        )}
 
         {/* Tabela */}
         <div className="card overflow-hidden">

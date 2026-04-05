@@ -2,9 +2,10 @@
 import { useEffect, useState } from 'react'
 import { AppShell } from '@/components/layout/AppShell'
 import { useT } from '@/lib/hooks/useAppStore'
+import { useUserPermissions } from '@/lib/hooks/useUserPermissions'
 import { createClient } from '@/lib/supabase/client'
 import type { PresencaDiaria } from '@/lib/types/database'
-import { Users, Plus, Loader2, AlertCircle } from 'lucide-react'
+import { Users, Plus, Loader2, AlertCircle, Lock, X } from 'lucide-react'
 import { format } from 'date-fns'
 
 const COR_STATUS: Record<string, string> = {
@@ -15,24 +16,105 @@ const COR_STATUS: Record<string, string> = {
   'Férias':             'badge-blue',
 }
 
+// ──── Tipos do formulário ────────────────────────────────────
+type FormPresenca = {
+  data: string
+  colaborador_id: string    // ID do relacionamento
+  equipe_id: string         // ID do relacionamento
+  funcao_id: string         // ID do relacionamento (função/mão de obra)
+  status_presenca: string
+  hora_registro: string
+}
+
 export default function PresencaPage() {
   const t = useT()
   const supabase = createClient()
+  const { perfil, permissoes } = useUserPermissions()
   const [registros, setRegistros] = useState<PresencaDiaria[]>([])
   const [loading, setLoading] = useState(true)
   const [dataFiltro, setDataFiltro] = useState(format(new Date(), 'yyyy-MM-dd'))
+  const [showForm, setShowForm] = useState(false)
+  const canCreate = permissoes?.create_presenca ?? false
+  const [formData, setFormData] = useState<FormPresenca>({
+    data: dataFiltro,
+    colaborador_id: '',
+    equipe_id: '',
+    funcao_id: '',
+    status_presenca: 'Presente',
+    hora_registro: format(new Date(), 'HH:mm'),
+  })
+  const [submitting, setSubmitting] = useState(false)
+  const [erro, setErro] = useState('')
 
   useEffect(() => { carregar() }, [dataFiltro])
 
   async function carregar() {
     setLoading(true)
-    const { data } = await supabase
-      .from('presenca_diaria')
-      .select('*, colaboradores(nome, matricula), equipes(nome_equipe), funcoes_mao_obra(nome_funcao)')
-      .eq('data', dataFiltro)
-      .order('id')
-    setRegistros(data ?? [])
-    setLoading(false)
+    try {
+      const { data, error } = await supabase
+        .from('presenca_diaria')
+        .select('*, colaboradores(nome, matricula), equipes(nome_equipe), funcoes_mao_obra(nome_funcao)')
+        .eq('data', dataFiltro)
+        .order('id')
+
+      if (error) throw error
+      setRegistros(data ?? [])
+    } catch (err) {
+      console.error('Erro ao carregar:', err)
+      setRegistros([])
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    setErro('')
+
+    // 🔒 Verificar permissão
+    if (!canCreate) {
+      setErro('Você não tem permissão para registrar presença.')
+      return
+    }
+
+    // Validação rigorosa
+    if (!formData.data) { setErro('Data é obrigatória'); return }
+    if (!formData.colaborador_id) { setErro('Colaborador é obrigatório'); return }
+    if (!formData.equipe_id) { setErro('Equipe é obrigatória'); return }
+    if (!formData.funcao_id) { setErro('Função é obrigatória'); return }
+    if (!formData.status_presenca) { setErro('Status é obrigatório'); return }
+
+    setSubmitting(true)
+
+    try {
+      const { error } = await supabase.from('presenca_diaria').insert({
+        data: formData.data,
+        colaborador_id: parseInt(formData.colaborador_id),
+        equipe_id: parseInt(formData.equipe_id),
+        funcao_id: parseInt(formData.funcao_id),
+        status_presenca: formData.status_presenca,
+        hora_registro: formData.hora_registro || null,
+      })
+
+      if (error) throw error
+
+      // Sucesso: limpa e recarrega
+      setFormData({
+        data: dataFiltro,
+        colaborador_id: '',
+        equipe_id: '',
+        funcao_id: '',
+        status_presenca: 'Presente',
+        hora_registro: format(new Date(), 'HH:mm'),
+      })
+      setShowForm(false)
+      carregar()
+    } catch (err: any) {
+      console.error('Erro ao salvar:', err)
+      setErro(err.message || 'Erro ao salvar. Tente novamente.')
+    } finally {
+      setSubmitting(false)
+    }
   }
 
   const resumo = {
@@ -56,11 +138,116 @@ export default function PresencaPage() {
           </div>
           <div className="flex items-center gap-2">
             <input type="date" value={dataFiltro} onChange={e => setDataFiltro(e.target.value)} className="input text-sm w-auto" />
-            <button className="btn-primary flex items-center gap-2 text-sm py-2">
-              <Plus size={15} /> Registrar
+            <button
+              onClick={() => setShowForm(!showForm)}
+              disabled={!canCreate}
+              title={canCreate ? '' : `Acesso restrito. Seu perfil (${perfil}) não pode registrar presença.`}
+              className={`flex items-center gap-2 text-sm py-2 ${
+                canCreate
+                  ? 'btn-primary'
+                  : 'px-3 py-2 rounded-lg bg-slate-200 dark:bg-slate-700 text-slate-500 dark:text-slate-400 cursor-not-allowed opacity-50'
+              }`}
+            >
+              {canCreate ? <Plus size={15} /> : <Lock size={15} />}
+              {showForm ? 'Cancelar' : 'Registrar'}
             </button>
           </div>
         </div>
+
+        {/* Formulário de criação */}
+        {showForm && (
+          <form onSubmit={handleSubmit} className="card space-y-4 bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700">
+            {erro && (
+              <div className="flex items-start gap-2 p-3 bg-red-500/10 border border-red-500/30 rounded-lg">
+                <AlertCircle size={18} className="text-red-600 dark:text-red-400 mt-0.5 flex-shrink-0" />
+                <p className="text-sm text-red-600 dark:text-red-400">{erro}</p>
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="label text-xs font-medium">Data*</label>
+                <input
+                  type="date"
+                  value={formData.data}
+                  onChange={e => setFormData({ ...formData, data: e.target.value })}
+                  className="input text-sm"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="label text-xs font-medium">Colaborador (ID)*</label>
+                <input
+                  type="number"
+                  placeholder="ID do colaborador"
+                  value={formData.colaborador_id}
+                  onChange={e => setFormData({ ...formData, colaborador_id: e.target.value })}
+                  className="input text-sm"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="label text-xs font-medium">Equipe (ID)*</label>
+                <input
+                  type="number"
+                  placeholder="ID da equipe"
+                  value={formData.equipe_id}
+                  onChange={e => setFormData({ ...formData, equipe_id: e.target.value })}
+                  className="input text-sm"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="label text-xs font-medium">Função (ID)*</label>
+                <input
+                  type="number"
+                  placeholder="ID da função"
+                  value={formData.funcao_id}
+                  onChange={e => setFormData({ ...formData, funcao_id: e.target.value })}
+                  className="input text-sm"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="label text-xs font-medium">Hora do Registro</label>
+                <input
+                  type="time"
+                  value={formData.hora_registro}
+                  onChange={e => setFormData({ ...formData, hora_registro: e.target.value })}
+                  className="input text-sm"
+                />
+              </div>
+
+              <div>
+                <label className="label text-xs font-medium">Status*</label>
+                <select
+                  value={formData.status_presenca}
+                  onChange={e => setFormData({ ...formData, status_presenca: e.target.value })}
+                  className="input text-sm"
+                  required
+                >
+                  <option>Presente</option>
+                  <option>Ausente</option>
+                  <option>Falta Justificada</option>
+                  <option>Afastado</option>
+                  <option>Férias</option>
+                </select>
+              </div>
+            </div>
+
+            <button
+              type="submit"
+              disabled={submitting}
+              className="btn-primary w-full"
+            >
+              {submitting ? '⏳ Salvando...' : '✓ Registrar Presença'}
+            </button>
+          </form>
+        )}
 
         {/* Resumo */}
         {registros.length > 0 && (

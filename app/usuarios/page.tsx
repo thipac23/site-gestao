@@ -3,27 +3,107 @@ import { useEffect, useState } from 'react'
 import { AppShell } from '@/components/layout/AppShell'
 import { createClient } from '@/lib/supabase/client'
 import { Usuario } from '@/lib/types/database'
+import { useUserPermissions } from '@/lib/hooks/useUserPermissions'
+import { Plus, AlertCircle, Loader2, Lock } from 'lucide-react'
 
 type UsuarioComPerfil = Usuario & { perfis?: { nome_perfil: string } | null }
 
+// ──── Tipos do formulário ────────────────────────────────────
+type FormUsuario = {
+  nome: string
+  email: string
+  empresa: string
+  perfil_id: string
+  ativo: boolean
+}
+
 export default function UsuariosPage() {
+  const { perfil, permissoes } = useUserPermissions()
   const [usuarios, setUsuarios] = useState<UsuarioComPerfil[]>([])
   const [loading, setLoading] = useState(true)
   const [busca, setBusca] = useState('')
+  const [showForm, setShowForm] = useState(false)
+  const canCreate = permissoes?.create_usuarios ?? false
+  const [formData, setFormData] = useState<FormUsuario>({
+    nome: '',
+    email: '',
+    empresa: '',
+    perfil_id: '',
+    ativo: true,
+  })
+  const [submitting, setSubmitting] = useState(false)
+  const [erro, setErro] = useState('')
 
   useEffect(() => {
-    async function load() {
-      setLoading(true)
+    carregar()
+  }, [])
+
+  async function carregar() {
+    setLoading(true)
+    try {
       const supabase = createClient()
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from('usuarios')
         .select('*, perfis(nome_perfil)')
         .order('nome')
+
+      if (error) throw error
       setUsuarios(data || [])
+    } catch (err) {
+      console.error('Erro ao carregar:', err)
+      setUsuarios([])
+    } finally {
       setLoading(false)
     }
-    load()
-  }, [])
+  }
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    setErro('')
+
+    // 🔒 Verificar permissão
+    if (!canCreate) {
+      setErro('Você não tem permissão para criar usuários.')
+      return
+    }
+
+    // Validação rigorosa
+    if (!formData.nome.trim()) { setErro('Nome é obrigatório'); return }
+    if (!formData.email.trim()) { setErro('E-mail é obrigatório'); return }
+    if (!formData.email.includes('@')) { setErro('E-mail inválido'); return }
+    if (!formData.perfil_id) { setErro('Perfil é obrigatório'); return }
+
+    setSubmitting(true)
+
+    try {
+      const supabase = createClient()
+      const { error } = await supabase.from('usuarios').insert({
+        nome: formData.nome.trim(),
+        email: formData.email.trim().toLowerCase(),
+        empresa: formData.empresa?.trim() || null,
+        perfil_id: parseInt(formData.perfil_id),
+        ativo: formData.ativo,
+      })
+
+      if (error) throw error
+
+      // Sucesso: limpa e recarrega
+      setFormData({
+        nome: '',
+        email: '',
+        empresa: '',
+        perfil_id: '',
+        ativo: true,
+      })
+      setShowForm(false)
+      carregar()
+    } catch (err: any) {
+      console.error('Erro ao salvar:', err)
+      setErro(err.message || 'Erro ao salvar. Tente novamente.')
+    } finally {
+      setSubmitting(false)
+    }
+  }
 
   const filtrados = usuarios.filter(u =>
     !busca ||
@@ -51,19 +131,115 @@ export default function UsuariosPage() {
   return (
     <AppShell>
       <div className="space-y-6">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div>
             <h1 className="text-2xl font-bold text-foreground">Usuários</h1>
             <p className="text-sm text-muted-foreground mt-1">{totalAtivos} ativos de {usuarios.length} cadastrados</p>
           </div>
-          <input
-            type="search"
-            placeholder="Buscar por nome, e-mail ou empresa..."
-            value={busca}
-            onChange={e => setBusca(e.target.value)}
-            className="input w-72"
-          />
+          <div className="flex items-center gap-2">
+            <input
+              type="search"
+              placeholder="Buscar por nome, e-mail ou empresa..."
+              value={busca}
+              onChange={e => setBusca(e.target.value)}
+              className="input text-sm"
+            />
+            <button
+              onClick={() => setShowForm(!showForm)}
+              disabled={!canCreate}
+              title={canCreate ? '' : `Acesso restrito. Seu perfil (${perfil}) não pode criar usuários.`}
+              className={`flex items-center gap-2 text-sm py-2 whitespace-nowrap ${
+                canCreate
+                  ? 'btn-primary'
+                  : 'px-3 py-2 rounded-lg bg-slate-200 dark:bg-slate-700 text-slate-500 dark:text-slate-400 cursor-not-allowed opacity-50'
+              }`}
+            >
+              {canCreate ? <Plus size={15} /> : <Lock size={15} />}
+              {showForm ? 'Cancelar' : 'Novo Usuário'}
+            </button>
+          </div>
         </div>
+
+        {/* Formulário de criação */}
+        {showForm && (
+          <form onSubmit={handleSubmit} className="card space-y-4 bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700">
+            {erro && (
+              <div className="flex items-start gap-2 p-3 bg-red-500/10 border border-red-500/30 rounded-lg">
+                <AlertCircle size={18} className="text-red-600 dark:text-red-400 mt-0.5 flex-shrink-0" />
+                <p className="text-sm text-red-600 dark:text-red-400">{erro}</p>
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="label text-xs font-medium">Nome*</label>
+                <input
+                  type="text"
+                  placeholder="Ex: João Silva"
+                  value={formData.nome}
+                  onChange={e => setFormData({ ...formData, nome: e.target.value })}
+                  className="input text-sm"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="label text-xs font-medium">E-mail*</label>
+                <input
+                  type="email"
+                  placeholder="Ex: joao@empresa.com"
+                  value={formData.email}
+                  onChange={e => setFormData({ ...formData, email: e.target.value })}
+                  className="input text-sm"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="label text-xs font-medium">Empresa</label>
+                <input
+                  type="text"
+                  placeholder="Opcional"
+                  value={formData.empresa}
+                  onChange={e => setFormData({ ...formData, empresa: e.target.value })}
+                  className="input text-sm"
+                />
+              </div>
+
+              <div>
+                <label className="label text-xs font-medium">Perfil (ID)*</label>
+                <input
+                  type="number"
+                  placeholder="ID do perfil"
+                  value={formData.perfil_id}
+                  onChange={e => setFormData({ ...formData, perfil_id: e.target.value })}
+                  className="input text-sm"
+                  required
+                />
+              </div>
+
+              <div className="col-span-full">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={formData.ativo}
+                    onChange={e => setFormData({ ...formData, ativo: e.target.checked })}
+                    className="w-4 h-4"
+                  />
+                  <span className="text-sm font-medium">Ativo</span>
+                </label>
+              </div>
+            </div>
+
+            <button
+              type="submit"
+              disabled={submitting}
+              className="btn-primary w-full"
+            >
+              {submitting ? '⏳ Salvando...' : '✓ Criar Usuário'}
+            </button>
+          </form>
+        )}
 
         <div className="card overflow-hidden p-0">
           <div className="overflow-x-auto">
